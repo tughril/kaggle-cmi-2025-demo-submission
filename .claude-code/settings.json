@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make *)",
+      "Bash(uv *)",
+      "Bash(git *)",
+      "Bash(python *)",
+      "Bash(pytest *)",
+      "Bash(jupytext *)"
+    ],
+    "deny": ["Bash(sudo *)"]
+  },
+  "tools": {
+    "bash": {
+      "enabled": true,
+      "timeout": 300000
+    },
+    "read": {
+      "enabled": true
+    },
+    "write": {
+      "enabled": true,
+      "require_confirmation": false
+    },
+    "edit": {
+      "enabled": true,
+      "require_confirmation": false
+    }
+  },
+  "file_operations": {
+    "require_confirmation": false
+  }
+}
