@@ -1,3 +1,5 @@
+import os
+import pickle
 from datetime import datetime
 
 import lightgbm as lgb
@@ -9,65 +11,52 @@ from sklearn.metrics import classification_report, f1_score
 from sklearn.preprocessing import LabelEncoder
 
 
-def validate_test_data():
-    """Validate that the model can handle test data format"""
-    print("\n=== Test Data Validation ===")
+def aggregate_features_by_sequence(
+    df: pl.DataFrame, feature_cols: list[str], include_labels: bool = True
+) -> pl.DataFrame:
+    """
+    Aggregate features by sequence_id using statistical measures.
+    Returns DataFrame with one row per sequence.
+    """
+    print(f"Aggregating {len(feature_cols)} features by sequence_id...")
 
-    # Load test data
-    test_df = pl.read_csv("data/test.csv")
-    print(f"Test data shape: {test_df.shape}")
+    # Group by sequence_id and calculate statistics
+    agg_exprs = []
+    for col in feature_cols:
+        agg_exprs.extend(
+            [
+                pl.col(col).mean().alias(f"{col}_mean"),
+                pl.col(col).std().alias(f"{col}_std"),
+                pl.col(col).min().alias(f"{col}_min"),
+                pl.col(col).max().alias(f"{col}_max"),
+            ]
+        )
 
-    # Check for missing columns that exist in train but not test
-    train_df = pl.read_csv("data/train.csv")
-    missing_cols = set(train_df.columns) - set(test_df.columns)
-    print(f"Columns in train but not test: {missing_cols}")
+    # Include labels and metadata only if they exist (for training data)
+    if include_labels and "gesture" in df.columns:
+        agg_exprs.extend(
+            [
+                pl.col("gesture").first().alias("gesture"),
+                pl.col("subject").first().alias("subject"),
+                pl.col("sequence_type").first().alias("sequence_type"),
+            ]
+        )
+    elif "subject" in df.columns:
+        # For test data, include subject if available
+        agg_exprs.append(pl.col("subject").first().alias("subject"))
 
-    # Check for null values in test data
-    null_counts = test_df.null_count()
-    print("Null values in test data:")
-    for row in null_counts.iter_rows(named=True):
-        for col, count in row.items():
-            if count > 0:
-                print(f"{col}: {count}")
+    aggregated = df.group_by("sequence_id").agg(agg_exprs)
 
-    # Check IMU-only rows (50% of test data)
-    imu_cols = ["acc_x", "acc_y", "acc_z", "rot_w", "rot_x", "rot_y", "rot_z"]
-    temp_cols = [col for col in test_df.columns if col.startswith("thm_")]
-    tof_cols = [col for col in test_df.columns if col.startswith("tof_")]
+    print(f"Aggregated data shape: {aggregated.shape}")
+    print(f"Original sequences: {df.select('sequence_id').n_unique()}")
+    print(f"Aggregated sequences: {len(aggregated)}")
 
-    # Check if all temp and tof columns are null for each row
-    imu_only_mask = (
-        test_df.select(temp_cols + tof_cols)
-        .select(pl.all_horizontal(pl.all().is_null()))
-        .to_series()
-    )
-    imu_only_count = imu_only_mask.sum()
-    print(
-        f"IMU-only rows: {imu_only_count}/{len(test_df)} ({imu_only_count / len(test_df) * 100:.1f}%)"
-    )
-
-    # Prepare test features using same logic as training
-    non_feature_cols = [
-        "row_id",
-        "sequence_type",
-        "sequence_id",
-        "sequence_counter",
-        "subject",
-        "orientation",
-        "behavior",
-        "phase",
-        "gesture",
-    ]
-    test_feature_cols = [col for col in test_df.columns if col not in non_feature_cols]
-    test_X = test_df.select(test_feature_cols).fill_null(-1)
-
-    print(f"Test features shape: {test_X.shape}")
-    print(f"Test features: {len(test_feature_cols)}")
-
-    return test_X
+    return aggregated
 
 
-def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
+def do_job(
+    sample_size: int | None = None, log_model: bool = False, save_model: bool = False
+) -> None:
     # Load data
     print("Loading data...")
     df = pl.read_csv("data/train.csv")
@@ -96,23 +85,35 @@ def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
     ]
     feature_cols = [col for col in df.columns if col not in non_feature_cols]
 
-    X = df.select(feature_cols).fill_null(-1)
+    # Aggregate features by sequence
+    df_agg = aggregate_features_by_sequence(df, feature_cols)
+
+    # Prepare aggregated features
+    agg_feature_cols = []
+    for col in feature_cols:
+        agg_feature_cols.extend(
+            [f"{col}_mean", f"{col}_std", f"{col}_min", f"{col}_max"]
+        )
+
+    X = df_agg.select(agg_feature_cols).fill_null(-1)
 
     # Prepare target
     label_encoder = LabelEncoder()
-    y = label_encoder.fit_transform(df.select("gesture").to_series())
+    y = label_encoder.fit_transform(df_agg.select("gesture").to_series())
 
-    print(f"Features: {X.shape[1]}")
+    print(f"Aggregated features: {X.shape[1]} (from {len(feature_cols)} original)")
+    print(f"Sequences: {len(df_agg)}")
     print(f"Classes: {len(np.unique(y))}")
-    print(f"Unique gestures: {df.select('gesture').unique().to_series().to_list()}")
+    print(f"Unique gestures: {df_agg.select('gesture').unique().to_series().to_list()}")
 
     # Log model parameters
     mlflow.log_param("num_features", X.shape[1])
     mlflow.log_param("num_classes", len(np.unique(y)))
     mlflow.log_param("split_strategy", "sequence_based")
+    mlflow.log_param("aggregation_method", "statistical")
 
     # Split data by sequence (hold out entire sequences)
-    unique_sequences = df.select("sequence_id").unique().to_series().to_list()
+    unique_sequences = df_agg.select("sequence_id").unique().to_series().to_list()
     np.random.seed(42)
     np.random.shuffle(unique_sequences)
 
@@ -120,8 +121,8 @@ def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
     train_sequences = unique_sequences[:split_idx]
     test_sequences = unique_sequences[split_idx:]
 
-    train_mask = df.select("sequence_id").to_series().is_in(train_sequences)
-    test_mask = df.select("sequence_id").to_series().is_in(test_sequences)
+    train_mask = df_agg.select("sequence_id").to_series().is_in(train_sequences)
+    test_mask = df_agg.select("sequence_id").to_series().is_in(test_sequences)
 
     X_train = X.filter(train_mask)
     X_test = X.filter(test_mask)
@@ -159,25 +160,7 @@ def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
     if log_model:
         mlflow.lightgbm.log_model(model, "model")
 
-    # Validate test data format
-    test_X = validate_test_data()
-
-    # Test model prediction on test data format
-    print("\nTesting model on test data format...")
-    try:
-        test_pred_proba = model.predict(test_X)
-        test_pred = np.argmax(test_pred_proba, axis=1)
-        print(f"Test predictions shape: {test_pred.shape}")
-        print(f"Test predictions sample: {test_pred[:10]}")
-    except Exception as e:
-        print(f"Error predicting on test data: {e}")
-
-    # Predict
-    print("Making predictions...")
-    y_pred_proba = model.predict(X_test)
-    y_pred = np.argmax(y_pred_proba, axis=1)
-
-    # Calculate BFRB vs non-BFRB binary F1
+    # Define BFRB behaviors for evaluation and model saving
     bfrb_behaviors = [
         "Forehead - pull hairline",
         "Eyelash - pull hair",
@@ -190,6 +173,74 @@ def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
         "Forehead - scratch",
         "Scratch knee/leg skin",
     ]
+
+    # Save model for Kaggle submission
+    if save_model:
+        os.makedirs("models", exist_ok=True)
+
+        # Save LightGBM model
+        model_path = "models/lightgbm_sequence_model.txt"
+        model.save_model(model_path)
+        print(f"Model saved to: {model_path}")
+
+        # Save label encoder and feature information
+        metadata = {
+            "label_encoder": label_encoder,
+            "feature_cols": feature_cols,
+            "agg_feature_cols": agg_feature_cols,
+            "bfrb_behaviors": bfrb_behaviors,
+            "non_feature_cols": non_feature_cols,
+        }
+
+        metadata_path = "models/model_metadata.pkl"
+        with open(metadata_path, "wb") as f:
+            pickle.dump(metadata, f)
+        print(f"Model metadata saved to: {metadata_path}")
+
+        # Save preprocessing function code (for reference)
+        with open("models/preprocessing_info.txt", "w") as f:
+            f.write("# Preprocessing steps for Kaggle submission:\n")
+            f.write("# 1. Load test data\n")
+            f.write(
+                "# 2. Aggregate features by sequence_id using mean, std, min, max\n"
+            )
+            f.write("# 3. Apply same feature selection and fill_null(-1)\n")
+            f.write("# 4. Predict and return one prediction per sequence_id\n")
+            f.write(f"# Original features: {len(feature_cols)}\n")
+            f.write(f"# Aggregated features: {len(agg_feature_cols)}\n")
+            f.write(f"# Classes: {len(label_encoder.classes_)}\n")
+        print("Preprocessing info saved to: models/preprocessing_info.txt")
+
+    # Validate test data format and aggregate by sequence
+    print("\n=== Test Data Validation ===")
+    test_df = pl.read_csv("data/test.csv")
+    print(f"Test data shape: {test_df.shape}")
+
+    # Aggregate test data by sequence
+    test_df_agg = aggregate_features_by_sequence(
+        test_df, feature_cols, include_labels=False
+    )
+    test_X_agg = test_df_agg.select(agg_feature_cols).fill_null(-1)
+
+    print(f"Aggregated test data shape: {test_X_agg.shape}")
+
+    # Test model prediction on aggregated test data
+    print("\nTesting model on aggregated test data...")
+    try:
+        test_pred_proba = model.predict(test_X_agg)
+        test_pred = np.argmax(test_pred_proba, axis=1)
+        print(f"Test predictions shape: {test_pred.shape}")
+        print(f"Test predictions sample: {test_pred[:10]}")
+        print(f"Unique test sequences: {len(test_df_agg)}")
+    except Exception as e:
+        print(f"Error predicting on test data: {e}")
+
+    # Predict
+    print("Making predictions...")
+    y_pred_proba = model.predict(X_test)
+    y_pred = np.argmax(y_pred_proba, axis=1)
+
+    # Calculate BFRB vs non-BFRB binary F1
 
     # Get BFRB class indices
     bfrb_indices = []
@@ -227,13 +278,13 @@ def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
     print(f"Macro F1 (9 classes): {macro_f1:.4f}")
     print(f"Competition Score: {competition_score:.4f}")
 
-    # Feature importance
+    # Feature importance (using aggregated feature names)
     feature_importance = pl.DataFrame(
-        {"feature": feature_cols, "importance": model.feature_importance()}
+        {"feature": agg_feature_cols, "importance": model.feature_importance()}
     ).sort("importance", descending=True)
 
     # Log feature importance
-    for i, row in enumerate(feature_importance.head(10).iter_rows(named=True)):
+    for row in feature_importance.head(10).iter_rows(named=True):
         mlflow.log_metric(f"feature_importance_{row['feature']}", row["importance"])
 
     print("\nTop 10 most important features:")
@@ -247,14 +298,13 @@ def do_job(sample_size: int | None = None, log_model: bool = False) -> None:
 def main():
     print("=== CMI LightGBM Simple Model ===")
 
-    # Start MLflow run
-    mlflow.set_experiment("lightgbm")
-
     now = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = f"first-implementation-{now}"
 
+    os.environ["MLFLOW_DISABLED"] = "true"
+    mlflow.set_experiment("lightgbm")
     with mlflow.start_run(run_name=run_name):
-        do_job()
+        do_job(save_model=True)
 
 
 if __name__ == "__main__":
