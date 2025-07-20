@@ -26,7 +26,7 @@ mypy:
 ty:
 	uv run ty check *.py
 
-.PHONY: hello
-hello:
-	PYTHONPATH=. uv run ml-cli hello
+.PHONY: mlflow-ui
+mlflow-ui:
+	uv run mlflow ui
 

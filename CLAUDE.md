@@ -1,44 +1,47 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This repository is focused exclusively on winning the Kaggle CMI 2025 competition. All development should be optimized for competition performance.
 
-## Development Commands
+## Essential Commands
 
-### Environment Setup
-- `make install` or `uv sync` - Install dependencies and set up virtual environment
+- `uv sync` - Install dependencies
+- `make lint` - Code quality check
+- `make sync` - Sync notebook with Python file
 
-### Code Quality
-- `make format` - Format code with ruff
-- `make lint` - Lint and auto-fix code with ruff
-- `make mypy` - Type check with mypy (checks `*.py` files in root)
-- `make ty` - Type check with ty (checks `*.py` files in root)
+## Kaggle CMI 2025 Competition - BFRB Detection
 
-### CLI Testing
-- `make hello` - Test CLI with hello command (uses `PYTHONPATH=. uv run ml-cli hello`)
+**Objective**: Classify 18 body-focused repetitive behaviors using wrist sensor data
 
-### Notebook Development
-- `make sync` - Sync notebook and Python file using jupytext
-- Before first sync, run: `uv run jupytext --set-formats ipynb,py:percent src/notebook/main.ipynb`
+### Data Files
+All data files are located in the `data/` directory:
+- `train.csv` (574,945 rows) - Sensor time series with labels
+- `test.csv` (107 rows sample) - Real test via API
+- `*_demographics.csv` - Participant characteristics
 
-### Cleanup
-- `make clean` - Remove cache directories and virtual environment
+### Target Classes
+- **8 BFRB-like**: Hair pulling, skin picking, scratching (target behaviors)
+- **10 Non-BFRB-like**: Drinking, texting, waving (control behaviors)
 
-## Architecture
+### Sensor Data (332 features/timestep)
+- **IMU (7)**: `acc_x/y/z` (m/s²), `rot_w/x/y/z` (quaternion)
+- **Temperature (5)**: `thm_1-5` (infrared °C)
+- **Distance (320)**: `tof_1-5_v0-63` (5×8×8 ToF sensors, 0-254 or -1)
 
-This is a machine learning template project using:
-- **uv** for Python package management and virtual environment
-- **jupytext** for notebook-Python file synchronization (ipynb ↔ py:percent format)
-- **ruff** for formatting and linting
-- **mypy/ty** for type checking
-- **typer** for CLI interface
-- **PyTorch ecosystem** with torchvision for ML models
-- **Standard ML stack**: numpy, pandas, scikit-learn, matplotlib, seaborn, opencv-python
+### Critical Constraints
+**Test environment removes:**
+- `behavior` (Transition/Pause/Gesture phases)
+- `orientation` (sitting/lying positions)
+- `sequence_type` (BFRB/non-BFRB labels)
 
-### Project Structure
-- `src/cmd/main.py` - CLI entry point with typer commands (hello, train, predict)
-- `src/notebook/` - Jupyter notebook development with jupytext sync
-- Entry point: `ml-cli` command defined in pyproject.toml scripts
+**50% of test data**: IMU only (temperature/distance = null)
 
-The main development happens in `src/notebook/` where Jupyter notebooks are kept in sync with Python files using jupytext's percent format. This allows for version control of notebook content while maintaining notebook interactivity.
+### Evaluation
+**Score = (Binary F1 + Macro F1) / 2**
+- **Binary F1**: BFRB vs non-BFRB detection
+- **Macro F1**: 9-class (8 BFRB types + 1 combined non-BFRB)
 
-The CLI provides commands for training models and making predictions, with placeholders for actual ML implementation.
+### Key Strategy
+1. Train without phase/orientation info (simulate test)
+2. Handle missing sensors (temperature/distance nulls)
+3. Optimize both binary detection and multi-class accuracy
+4. Use demographics for individual calibration

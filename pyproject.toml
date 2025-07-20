@@ -7,11 +7,14 @@ requires-python = ">=3.13"
 dependencies = [
     "ipykernel>=6.29.5",
     "jupytext>=1.17.2",
+    "lightgbm>=4.0.0",
     "matplotlib>=3.10.3",
+    "mlflow>=3.1.1,<4.0.0",
     "mypy>=1.16.1",
     "numpy>=2.3.1",
     "opencv-python>=4.11.0.86",
     "pandas>=2.3.0",
+    "polars (>=1.31.0,<2.0.0)",
     "scikit-learn>=1.7.0",
     "seaborn>=0.13.2",
     "torch>=2.7.1",
@@ -20,11 +23,13 @@ dependencies = [
     "typer>=0.12.0",
 ]
 
-[project.scripts]
-ml-cli = "src.cmd.main:app"
-
 [tool.uv]
-package = true
+package = false
 
 [tool.mypy]
+plugins = "numpy.typing.mypy_plugin"
 python_version = "3.13"
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*"]
+ignore_missing_imports = true

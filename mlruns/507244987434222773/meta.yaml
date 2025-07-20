@@ -1,0 +1,6 @@
+artifact_location: file:///Users/takashi/playground/kaggle-cmi-2025-demo-submission/mlruns/507244987434222773
+creation_time: 1753033659901
+experiment_id: '507244987434222773'
+last_update_time: 1753033659901
+lifecycle_stage: active
+name: lightgbm
